@@ -17,3 +17,4 @@ frontend/.next/
 Thumbs.db
 *.pem
 *.log
+plan_extracted.txt
