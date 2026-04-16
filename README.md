@@ -279,6 +279,9 @@ ALLOWED_ORIGINS=http://localhost:3000
 DEFAULT_EMOTION_MODEL=hartmann
 ```
 
+Handoff document for HR:
+`https://docs.google.com/document/d/1aPJa3t_CUdeCqJM4cf1KCdy1bXGOCVeo0jtcLIqp-YQ/edit?usp=sharing`
+
 Notes:
 - `HF_TOKEN` is required for emotion inference.
 - `SARVAM_API_KEY` is required for TTS generation.
