@@ -25,6 +25,14 @@ from fastapi.responses import FileResponse
 from modules.emotion_engine import EmotionAnalysisError, emotion_engine
 from modules.text_to_speech import TTSGenerationError, tts_engine
 from modules.voice_mapper import voice_mapper
+from modules.prosody_director import prosody_director
+from modules.audio_stitcher import audio_stitcher
+from modules.advanced_voice_mapper import advanced_voice_mapper
+from modules.intelligent_text_formatter import (
+    intelligent_text_formatter,
+    sentiment_curve_generator,
+)
+from modules.word_prosody_engine import word_prosody_engine
 
 app = FastAPI(title="DARWIX AI Emotion Voice Pipeline")
 
@@ -170,6 +178,130 @@ async def websocket_endpoint(websocket: WebSocket, language: str = "en"):
         voice_profile = voice_mapper.map_to_voice(analysis, selected_language, selected_speaker)
         logger.debug(f"[{session_id}] Voice profile mapped: speaker={voice_profile.speaker}")
 
+        # === ADVANCED VOICE ENHANCEMENT ===
+        logger.debug(f"[{session_id}] Enhancing voice with advanced micro-prosody...")
+        advanced_voice = advanced_voice_mapper.enhance_voice_for_emotion(
+            voice_profile,
+            primary_emotion=analysis.primary_emotion,
+            confidence=analysis.confidence,
+            clarity=analysis.clarity,
+        )
+        micro_prosody_instructions = advanced_voice_mapper.create_micro_prosody_instructions(advanced_voice)
+        logger.debug(f"[{session_id}] Advanced voice parameters: breathing_freq={micro_prosody_instructions.get('breathing_frequency'):.2f}, vibrato={micro_prosody_instructions.get('vibrato_rate_hz'):.1f}Hz")
+
+        # === INTELLIGENT TEXT FORMATTING ===
+        logger.debug(f"[{session_id}] Formatting text for emotion '{analysis.primary_emotion}'...")
+        formatted_result = await asyncio.to_thread(
+            intelligent_text_formatter.format_for_emotion,
+            text,
+            analysis.primary_emotion,
+            analysis.confidence,
+            advanced_voice,
+        )
+        formatted_text = formatted_result.formatted_text
+        sentiment_curve_type = formatted_result.sentiment_curve.get("type", "flat")
+        dynamic_loudness_mult = formatted_result.dynamic_loudness_multiplier
+        logger.info(
+            f"[{session_id}] Text formatted: curve={sentiment_curve_type}, "
+            f"loudness_mult={dynamic_loudness_mult:.2f}, "
+            f"lexical_hints={formatted_result.lexical_prosody_hints}"
+        )
+
+        await websocket.send_text(json.dumps({
+            "type": "pipeline_status",
+            "stage": "Optimizing Text for Emotion",
+            "progress": 0,
+        }))
+
+        # === NEW PROSODY DIRECTOR PIPELINE ===
+        await websocket.send_text(json.dumps({
+            "type": "pipeline_status",
+            "stage": "Generating Semantic Micro-Chunks",
+            "progress": 0,
+        }))
+
+        voice_quality_context = {}
+        try:
+            # Build voice quality context for prosody director
+            voice_quality_context = {
+                "tensionLevel": "tense" if advanced_voice.tension > 0.6
+                                else "relaxed" if advanced_voice.tension < 0.3
+                                else "normal",
+                "breathiness": "high" if advanced_voice.breathiness > 0.4
+                               else "low" if advanced_voice.breathiness < 0.25
+                               else "medium",
+                "energyPattern": "rising" if advanced_voice.energy_rise > 0.25
+                                 else "falling" if advanced_voice.energy_rise < -0.25
+                                 else "flat",
+                "tension": round(advanced_voice.tension, 4),
+                "breathinessValue": round(advanced_voice.breathiness, 4),
+                "brightness": round(advanced_voice.brightness, 4),
+                "pitchVariance": round(advanced_voice.pitch_variance, 4),
+                "paceVariance": round(advanced_voice.pace_variance, 4),
+                "energyRise": round(advanced_voice.energy_rise, 4),
+                "basePace": round(voice_profile.pace, 4),
+                "basePitch": round(voice_profile.pitch, 4),
+                "baseLoudness": round(voice_profile.loudness, 4),
+            }
+            
+            # Use FORMATTED text for prosody direction, not original
+            chunks = await prosody_director.direct_prosody(formatted_text, voice_quality_context)
+            logger.info(f"[{session_id}] Prosody director produced {len(chunks)} chunks")
+
+            # === APPLY SENTIMENT CURVE ===
+            chunks = sentiment_curve_generator.apply_sentiment_curve(
+                chunks,
+                sentiment_curve_type,
+                voice_profile.loudness,
+                dynamic_loudness_mult,
+            )
+            logger.info(f"[{session_id}] Applied {sentiment_curve_type} sentiment curve to chunks")
+
+            # Use advanced voice parameters to shape the actual engine knobs per clause.
+            chunks = advanced_voice_mapper.apply_to_chunks(chunks, advanced_voice)
+            logger.info(f"[{session_id}] Applied advanced chunk shaping to {len(chunks)} chunks")
+            
+            # === ANALYZE WORD-LEVEL PROSODY ===
+            word_prosody_info = []
+            for chunk_idx, chunk in enumerate(chunks):
+                if chunk.words:
+                    metadata = word_prosody_engine.extract_word_prosody_metadata(chunk)
+                    word_prosody_info.append({
+                        "chunk_idx": chunk_idx,
+                        "word_count": len(chunk.words),
+                        "significant_pauses": metadata.significant_pauses,
+                        "emotion_context": metadata.emotion_context,
+                    })
+                    logger.debug(
+                        f"[{session_id}] Chunk {chunk_idx}: "
+                        f"{len(chunk.words)} words with {metadata.significant_pauses} significant pauses"
+                    )
+            
+            if word_prosody_info:
+                logger.info(f"[{session_id}] Word-level prosody extracted from {len(word_prosody_info)} chunks")
+                await websocket.send_text(json.dumps({
+                    "type": "debug_info",
+                    "message": f"Word-level prosody: {len(word_prosody_info)} chunks with word control",
+                }))
+
+        except Exception as e:
+            logger.error(f"[{session_id}] Prosody direction failed, falling back to single chunk: {e}")
+            chunks = prosody_director.fallback_clause_chunks(formatted_text, voice_quality_context)
+            chunks = sentiment_curve_generator.apply_sentiment_curve(
+                chunks,
+                sentiment_curve_type,
+                voice_profile.loudness,
+                dynamic_loudness_mult,
+            )
+            chunks = advanced_voice_mapper.apply_to_chunks(chunks, advanced_voice)
+
+        await websocket.send_text(json.dumps({
+            "type": "pipeline_status",
+            "stage": "Mapping Chunk-Level Prosody Parameters",
+            "progress": 1,
+            "chunk_count": len(chunks),
+        }))
+
         file_stem = "_".join(
             [
                 time.strftime("%Y%m%d-%H%M%S"),
@@ -189,26 +321,95 @@ async def websocket_endpoint(websocket: WebSocket, language: str = "en"):
             )
         )
 
-        synthesis = await tts_engine.synthesize_text(
-            text=text,
-            language=selected_language,
-            voice_profile=voice_profile,
-            output_dir=OUTPUT_DIR,
-            file_stem=file_stem,
-        )
+        # === CONCURRENT CHUNK SYNTHESIS ===
+        await websocket.send_text(json.dumps({
+            "type": "pipeline_status",
+            "stage": "Synthesizing Concurrent Audio Streams",
+            "progress": 2,
+        }))
 
-        await websocket.send_bytes(synthesis.audio_bytes)
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "transcript",
-                    "role": "assistant",
-                    "text": _build_assistant_summary(analysis, voice_profile, synthesis.file_path.name),
-                    "latency": round(time.time() - started_at, 2),
-                    "file_url": f"/outputs/{synthesis.file_path.name}",
-                }
+        async def synthesize_chunk(chunk, chunk_idx):
+            """Synthesize a single chunk with its custom prosody parameters."""
+            try:
+                # Use the chunk-level prosody values directly, with the selected speaker preserved.
+                chunk_voice_profile = type(voice_profile)(
+                    speaker=voice_profile.speaker,
+                    pitch=chunk.pitch,
+                    pace=chunk.pace,
+                    loudness=chunk.loudness,
+                    intensity=voice_profile.intensity,
+                    stability=voice_profile.stability,
+                    dimensions=voice_profile.dimensions,
+                    reason=f"{voice_profile.reason} [chunk {chunk_idx+1}: {chunk.emotion_context}]",
+                    tts_model=voice_profile.tts_model,
+                    output_audio_codec=voice_profile.output_audio_codec,
+                    speech_sample_rate=voice_profile.speech_sample_rate,
+                    enable_preprocessing=voice_profile.enable_preprocessing,
+                )
+                
+                chunk_stem = f"{file_stem}_chunk_{chunk_idx:02d}"
+                synthesis = await tts_engine.synthesize_text(
+                    text=chunk.text,
+                    language=selected_language,
+                    voice_profile=chunk_voice_profile,
+                    output_dir=OUTPUT_DIR,
+                    file_stem=chunk_stem,
+                )
+                
+                logger.info(f"[{session_id}] Synthesized chunk {chunk_idx+1}/{len(chunks)}")
+                return synthesis
+            except Exception as e:
+                logger.error(f"[{session_id}] Chunk synthesis failed: {e}")
+                raise
+
+        try:
+            # Synthesize all chunks concurrently
+            syntheses = await asyncio.gather(
+                *[synthesize_chunk(chunk, i) for i, chunk in enumerate(chunks)],
+                return_exceptions=False
             )
-        )
+
+            await websocket.send_text(json.dumps({
+                "type": "pipeline_status",
+                "stage": "Assembling Final Audio Vector",
+                "progress": 3,
+            }))
+
+            # === AUDIO STITCHING ===
+            chunk_files = [s.file_path for s in syntheses]
+            pause_durations = [chunks[i].post_chunk_pause_ms for i in range(len(chunks) - 1)] + [0]
+
+            final_path = OUTPUT_DIR / f"{file_stem}_final.wav"
+            await asyncio.to_thread(
+                audio_stitcher.stitch_chunks,
+                chunk_files,
+                pause_durations,
+                final_path,
+            )
+
+            # Read final stitched audio
+            final_audio_bytes = final_path.read_bytes()
+
+            await websocket.send_bytes(final_audio_bytes)
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "transcript",
+                        "role": "assistant",
+                        "text": _build_assistant_summary(analysis, voice_profile, final_path.name),
+                        "latency": round(time.time() - started_at, 2),
+                        "file_url": f"/outputs/{final_path.name}",
+                        "chunks_processed": len(chunks),
+                    }
+                )
+            )
+
+        except Exception as e:
+            logger.error(f"[{session_id}] Prosody pipeline failed: {e}", exc_info=True)
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": f"Audio processing failed: {e}"
+            }))
 
     async def run_processing_task(payload: dict):
         nonlocal current_processing_task

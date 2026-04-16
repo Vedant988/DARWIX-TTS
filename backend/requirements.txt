@@ -4,3 +4,5 @@ websockets>=12.0
 httpx==0.28.1
 python-dotenv==1.2.2
 huggingface_hub>=0.20.0
+groq>=0.4.1
+pydub>=0.25.1

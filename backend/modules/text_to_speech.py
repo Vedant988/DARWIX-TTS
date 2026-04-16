@@ -1,5 +1,6 @@
 import base64
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,11 +19,53 @@ class SynthesisResult:
 
 class TTSEngine:
     API_URL = "https://api.sarvam.ai/text-to-speech"
+    GLOBAL_PACE_MULTIPLIER = 0.95
+    LANGUAGE_CODE_MAP = {
+        "en": "en-IN",
+        "en-in": "en-IN",
+        "hi": "hi-IN",
+        "hi-in": "hi-IN",
+        "bn": "bn-IN",
+        "bn-in": "bn-IN",
+        "gu": "gu-IN",
+        "gu-in": "gu-IN",
+        "kn": "kn-IN",
+        "kn-in": "kn-IN",
+        "ml": "ml-IN",
+        "ml-in": "ml-IN",
+        "mr": "mr-IN",
+        "mr-in": "mr-IN",
+        "od": "od-IN",
+        "od-in": "od-IN",
+        "pa": "pa-IN",
+        "pa-in": "pa-IN",
+        "ta": "ta-IN",
+        "ta-in": "ta-IN",
+        "te": "te-IN",
+        "te-in": "te-IN",
+    }
 
     def __init__(self):
         self.sarvam_api_key = os.environ.get("SARVAM_API_KEY")
         if not self.sarvam_api_key:
             print("WARNING: SARVAM_API_KEY is missing in .env")
+
+    def _normalize_target_language_code(self, language: str) -> str:
+        """Normalize language inputs to the BCP-47 tag Sarvam expects."""
+        normalized = (language or "en").strip()
+        lowered = normalized.lower()
+
+        if lowered in self.LANGUAGE_CODE_MAP:
+            return self.LANGUAGE_CODE_MAP[lowered]
+
+        if re.fullmatch(r"[a-z]{2,3}-[A-Z]{2}", normalized):
+            return normalized
+
+        if re.fullmatch(r"[a-z]{2,3}-[a-z]{2}", lowered):
+            language_part, region_part = lowered.split("-", 1)
+            return f"{language_part}-{region_part.upper()}"
+
+        return "hi-IN" if lowered.startswith("hi") else "en-IN"
 
     async def synthesize_text(self, text: str, language: str, voice_profile, output_dir: Path, file_stem: str) -> SynthesisResult:
         if not self.sarvam_api_key:
@@ -37,14 +80,24 @@ class TTSEngine:
         except ImportError as exc:
             raise TTSGenerationError("httpx is required for TTS requests") from exc
 
-        target_code = "hi-IN" if language == "hi" else "en-IN"
+        target_code = self._normalize_target_language_code(language)
+
+        # Sarvam expects pitch, pace, and loudness in constrained ranges.
+        def clamp(value: float, minimum: float, maximum: float) -> float:
+            return max(minimum, min(maximum, value))
+
+        # Bulbul v2 sounds most natural with small movements around neutral.
+        pitch = clamp(voice_profile.pitch, -0.22, 0.22)
+        pace = clamp(voice_profile.pace * self.GLOBAL_PACE_MULTIPLIER, 0.82, 1.08)
+        loudness = clamp(voice_profile.loudness, 0.82, 1.22)
+
         payload = {
             "text": text,
             "target_language_code": target_code,
             "speaker": voice_profile.speaker,
-            "pitch": voice_profile.pitch,
-            "pace": voice_profile.pace,
-            "loudness": voice_profile.loudness,
+            "pitch": pitch,
+            "pace": pace,
+            "loudness": loudness,
             "speech_sample_rate": voice_profile.speech_sample_rate,
             "enable_preprocessing": voice_profile.enable_preprocessing,
             "model": voice_profile.tts_model,
@@ -62,8 +115,18 @@ class TTSEngine:
                     },
                     json=payload,
                 )
+                response_text = response.text
                 response.raise_for_status()
                 data = response.json()
+        except httpx.HTTPStatusError as exc:
+            body = ""
+            try:
+                body = response_text
+            except NameError:
+                body = exc.response.text if exc.response is not None else ""
+            raise TTSGenerationError(
+                f"Sarvam TTS request failed: {exc} | response: {body}"
+            ) from exc
         except Exception as exc:
             raise TTSGenerationError(f"Sarvam TTS request failed: {exc}") from exc
 

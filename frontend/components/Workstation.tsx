@@ -20,6 +20,8 @@ import {
   Square,
   WandSparkles,
 } from "lucide-react";
+import EnhancedAudioPlayer from "./EnhancedAudioPlayer";
+import ProsodyVisualizer from "./ProsodyVisualizer";
 
 type Language = "en" | "hi";
 
@@ -128,7 +130,7 @@ export default function Workstation() {
   const [models, setModels] = useState<EmotionModel[]>(FALLBACK_MODELS);
   const [selectedModel, setSelectedModel] = useState("hartmann");
   const [language, setLanguage] = useState<Language>("en");
-  const [speaker, setSpeaker] = useState("anushka");
+  const [speaker, setSpeaker] = useState("manisha");
   const [text, setText] = useState("");
   const [search, setSearch] = useState("");
   const [connected, setConnected] = useState(false);
@@ -140,7 +142,10 @@ export default function Workstation() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioTime, setAudioTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
+  const [pipelineStage, setPipelineStage] = useState<string | null>(null);
+  const [chunkCount, setChunkCount] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null!);
@@ -212,7 +217,13 @@ export default function Workstation() {
       const payload = JSON.parse(event.data);
       console.log("[WS] Received message type:", payload.type);
       
-      if (payload.type === "analysis") {
+      if (payload.type === "pipeline_status") {
+        console.log("[WS] Pipeline stage:", payload.stage);
+        setPipelineStage(payload.stage);
+        if (payload.chunk_count) {
+          setChunkCount(payload.chunk_count);
+        }
+      } else if (payload.type === "analysis") {
         console.log("[WS] Emotion analysis received:", payload.analysis.primary_emotion);
         setAnalysis(payload.analysis);
         setVoice(payload.voice_profile);
@@ -220,12 +231,15 @@ export default function Workstation() {
       } else if (payload.type === "transcript" && payload.role === "assistant") {
         console.log("[WS] Transcript received:", payload.text.slice(0, 50));
         setSummary(payload);
+        setPipelineStage(null);
         setSubmitting(false);
       } else if (payload.type === "interrupt") {
         console.log("[WS] Interrupt received");
+        setPipelineStage(null);
         setSubmitting(false);
       } else if (payload.type === "error") {
         console.error("[WS] Error from backend:", payload.message);
+        setPipelineStage(null);
         setSubmitting(false);
       }
     };
@@ -239,6 +253,26 @@ export default function Workstation() {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
     };
   }, [audioUrl]);
+
+  // Track audio play/pause state
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => setIsPlaying(false);
+
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+
+    return () => {
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, []);
 
   const filteredModels = useMemo(() => {
     if (!search.trim()) return models;
@@ -355,6 +389,8 @@ export default function Workstation() {
       filteredModels={filteredModels}
       intensity={intensity}
       language={language}
+      pipelineStage={pipelineStage}
+      chunkCount={chunkCount}
       search={search}
       selectedModel={selectedModel}
       setLanguage={setLanguage}
@@ -378,6 +414,8 @@ function AtelierInputPage({
   filteredModels,
   intensity,
   language,
+  pipelineStage,
+  chunkCount,
   search,
   selectedModel,
   setLanguage,
@@ -397,6 +435,8 @@ function AtelierInputPage({
   filteredModels: EmotionModel[];
   intensity: number;
   language: Language;
+  pipelineStage: string | null;
+  chunkCount: number;
   search: string;
   selectedModel: string;
   setLanguage: (value: Language) => void;
@@ -640,7 +680,7 @@ function AtelierInputPage({
                   <div>
                     <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#5b6061]">Voice Speaker</label>
                     <div className="mt-2 grid grid-cols-2 gap-2">
-                      {(["anushka", "manisha", "vidya", "arya", "abhilash", "karun", "hitesh"] as const).map((s) => (
+                      {(["manisha", "vidya", "arya", "abhilash", "karun", "hitesh", "anushka"] as const).map((s) => (
                         <button
                           key={s}
                           onClick={() => setSpeaker(s)}
@@ -684,6 +724,58 @@ function AtelierInputPage({
                     <Sparkles className="h-5 w-5" />
                   </button>
                 </div>
+
+                {pipelineStage && (
+                  <div className="mt-8 space-y-3 rounded-lg bg-[#f2f4f4] p-6">
+                    <p className="text-xs font-bold uppercase tracking-[0.15em] text-[#5b6061]">Processing Pipeline</p>
+                    <div className="space-y-2">
+                      {[
+                        "Optimizing Text for Emotion",
+                        "Generating Semantic Micro-Chunks",
+                        "Mapping Chunk-Level Prosody Parameters",
+                        "Synthesizing Concurrent Audio Streams",
+                        "Assembling Final Audio Vector",
+                      ].map((stage, idx) => {
+                        const isActive = pipelineStage === stage;
+                        const isCompleted = [
+                          "Optimizing Text for Emotion",
+                          "Generating Semantic Micro-Chunks",
+                          "Mapping Chunk-Level Prosody Parameters",
+                          "Synthesizing Concurrent Audio Streams",
+                        ].indexOf(stage) <
+                          [
+                            "Optimizing Text for Emotion",
+                            "Generating Semantic Micro-Chunks",
+                            "Mapping Chunk-Level Prosody Parameters",
+                            "Synthesizing Concurrent Audio Streams",
+                            "Assembling Final Audio Vector",
+                          ].indexOf(pipelineStage || "");
+
+                        return (
+                          <div key={idx} className="flex items-center gap-3">
+                            <div
+                              className={`h-2 w-2 rounded-full transition-all ${
+                                isActive
+                                  ? "animate-pulse bg-[#5a6344]"
+                                  : isCompleted
+                                    ? "bg-[#5a6344]"
+                                    : "bg-[#dfe3e4]"
+                              }`}
+                            />
+                            <span
+                              className={`text-xs font-semibold uppercase tracking-[0.1em] ${
+                                isActive || isCompleted ? "text-[#5a6344]" : "text-[#afb3b3]"
+                              }`}
+                            >
+                              [ {isActive ? "ACTIVE" : isCompleted ? "✓" : "PENDING"} ] {stage}
+                              {isActive && chunkCount > 0 && ` (${chunkCount} chunks)`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </section>
 
               <div className="group relative h-72 overflow-hidden rounded-lg shadow-sm">
@@ -825,24 +917,15 @@ function TelemetryPage({
                 <p className="leading-relaxed text-[#5b6061]">{submittedText}</p>
               </section>
 
-              {/* Audio Player Section */}
-              {audioUrl && (
-                <section className="rounded-lg bg-white p-8 shadow-sm">
-                  <h2 className="mb-6 text-lg font-semibold text-[#2f3334]">Generated Audio</h2>
-                  <audio
-                    ref={audioRef}
-                    src={audioUrl}
-                    onLoadedMetadata={(e) => setAudioDuration(e.currentTarget.duration)}
-                    onTimeUpdate={(e) => setAudioTime(e.currentTarget.currentTime)}
-                    className="mb-4 w-full"
-                    controls
-                  />
-                  <div className="mt-4 flex items-center justify-between text-[12px] text-[#5b6061]">
-                    <span>{Math.floor(audioTime)}s</span>
-                    <span>{Math.floor(audioDuration)}s</span>
-                  </div>
-                </section>
-              )}
+              {/* Enhanced Audio Player */}
+              <EnhancedAudioPlayer
+                audioUrl={audioUrl}
+                audioRef={audioRef}
+                audioDuration={audioDuration}
+                audioTime={audioTime}
+                onTimeUpdate={setAudioTime}
+                setAudioDuration={setAudioDuration}
+              />
 
               {/* Emotion Matrix */}
               {analysis && (
@@ -908,12 +991,12 @@ function TelemetryPage({
                       <div key={idx}>
                         <div className="mb-2 flex items-center justify-between">
                           <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-[#5b6061]">{item.label}</span>
-                          <span className="text-sm font-semibold text-[#2f3334]">{pct(item.value)}</span>
+                          <span className="text-sm font-semibold text-[#2f3334] tabular-nums">{(item.value * 100).toFixed(0)}%</span>
                         </div>
-                        <div className="h-2 rounded-full bg-[#dfe3e4]">
+                        <div className="h-2 w-full rounded-full bg-[#dfe3e4] overflow-hidden">
                           <div
-                            className="h-full rounded-full bg-[#5a6344]"
-                            style={{ width: `${item.value * 100}%` }}
+                            className="h-full rounded-full bg-gradient-to-r from-[#5a6344] to-[#8e9677] transition-all duration-300"
+                            style={{ width: `${Math.min(100, Math.max(0, item.value * 100))}%` }}
                           />
                         </div>
                       </div>
